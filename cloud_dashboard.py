@@ -47,6 +47,12 @@ EXPECTED_COLUMNS = [
     "Prob Healthy",
     "Prob Misalignment",
     "Prob Unbalance",
+    "Session ID",
+    "Event Type",
+    "Mode",
+    "Source",
+    "Model",
+    "Model SHA",
 ]
 
 
@@ -83,6 +89,21 @@ def rows_to_records(values):
     return records
 
 
+def has_values(df, column):
+    if column not in df.columns:
+        return False
+    return df[column].astype(str).str.strip().ne("").any()
+
+
+def latest_session_id(df):
+    if df.empty or "Session ID" not in df.columns:
+        return ""
+    with_sessions = df[df["Session ID"].astype(str).str.strip().ne("")]
+    if with_sessions.empty:
+        return ""
+    return str(with_sessions.iloc[-1]["Session ID"])
+
+
 @st.cache_data(ttl=5)
 def fetch_data():
     """Pull all rows from the sheet and return as DataFrame."""
@@ -102,6 +123,12 @@ def fetch_data():
             if col not in df.columns:
                 df[col] = ""
 
+        event_type = df["Event Type"].astype(str).str.strip()
+        df.loc[event_type.eq(""), "Event Type"] = "prediction"
+        legacy_test = df["Prediction"].astype(str).str.strip().str.lower().eq("cloud logging test")
+        df.loc[legacy_test, "Event Type"] = "test"
+
+        df = df[df["Event Type"].astype(str).str.lower().eq("prediction")].copy()
         df = df[df["Prediction"].isin(CLASS_COLORS.keys())].copy()
         if df.empty:
             return pd.DataFrame()
@@ -146,9 +173,86 @@ if df.empty:
 
 
 # =========================================================
+# SESSION / FILTER CONTROLS
+# =========================================================
+latest_session = latest_session_id(df)
+session_values = sorted([
+    str(x) for x in df["Session ID"].dropna().unique()
+    if str(x).strip()
+])
+mode_values = sorted([
+    str(x) for x in df["Mode"].dropna().unique()
+    if str(x).strip()
+])
+
+st.markdown("### Cloud View")
+f1, f2, f3, f4 = st.columns([2.2, 1.6, 1.6, 1.2])
+with f1:
+    if session_values:
+        session_options = ["All sessions", "Latest session"] + session_values
+        session_choice = st.selectbox("Session", session_options, index=0)
+    else:
+        session_choice = "All sessions"
+        st.caption("Older rows have no Session ID. New local-dashboard rows will appear with one.")
+with f2:
+    pred_filter = st.multiselect(
+        "Prediction",
+        list(CLASS_COLORS.keys()),
+        default=list(CLASS_COLORS.keys()),
+    )
+with f3:
+    if mode_values:
+        mode_filter = st.multiselect("Mode", mode_values, default=mode_values)
+    else:
+        mode_filter = []
+        st.caption("Mode metadata not found yet.")
+with f4:
+    download_slot = st.empty()
+
+view_df = df.copy()
+if session_choice == "Latest session" and latest_session:
+    view_df = view_df[view_df["Session ID"].astype(str) == latest_session]
+elif session_choice not in ("All sessions", "Latest session"):
+    view_df = view_df[view_df["Session ID"].astype(str) == session_choice]
+if pred_filter:
+    view_df = view_df[view_df["Prediction"].isin(pred_filter)]
+if mode_filter:
+    view_df = view_df[view_df["Mode"].isin(mode_filter)]
+
+if view_df.empty:
+    st.warning("No cloud predictions match the selected filters.")
+    if auto_refresh:
+        time.sleep(5)
+        st.cache_data.clear()
+        st.rerun()
+    st.stop()
+
+with f4:
+    download_slot.download_button(
+        "Download CSV",
+        view_df.to_csv(index=False).encode("utf-8"),
+        file_name="cloud_predictions_filtered.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
+
+meta_cols = st.columns(4)
+with meta_cols[0]:
+    st.metric("Visible Rows", len(view_df))
+with meta_cols[1]:
+    st.metric("Sessions", view_df["Session ID"].astype(str).str.strip().replace("", pd.NA).dropna().nunique())
+with meta_cols[2]:
+    st.metric("Latest Session", latest_session if latest_session else "Legacy")
+with meta_cols[3]:
+    st.metric("Last Mode", str(view_df.iloc[-1]["Mode"] or "Legacy"))
+
+st.markdown("---")
+
+
+# =========================================================
 # LATEST PREDICTION - BIG CARDS
 # =========================================================
-latest = df.iloc[-1]
+latest = view_df.iloc[-1]
 pred = str(latest["Prediction"])
 color = CLASS_COLORS.get(pred, "#388bfd")
 conf = float(latest["Confidence (%)"]) if pd.notna(latest["Confidence (%)"]) else 0.0
@@ -191,6 +295,13 @@ with c4:
         unsafe_allow_html=True,
     )
 
+if str(latest.get("Session ID", "")).strip():
+    st.caption(
+        f"Session: {latest['Session ID']} | "
+        f"Mode: {latest.get('Mode', '') or 'n/a'} | "
+        f"Source: {latest.get('Source', '') or 'n/a'}"
+    )
+
 st.markdown("<br>", unsafe_allow_html=True)
 
 
@@ -202,10 +313,10 @@ col_left, col_right = st.columns(2)
 with col_left:
     fig_hist = go.Figure()
     for cls, clr in CLASS_COLORS.items():
-        mask = df["Prediction"] == cls
+        mask = view_df["Prediction"] == cls
         fig_hist.add_trace(go.Scatter(
-            x=df.loc[mask, "Timestamp"],
-            y=df.loc[mask, "Prediction"],
+            x=view_df.loc[mask, "Timestamp"],
+            y=view_df.loc[mask, "Prediction"],
             mode="markers",
             name=cls,
             marker=dict(color=clr, size=12, symbol="circle"),
@@ -226,12 +337,12 @@ with col_left:
 with col_right:
     fig_conf = go.Figure()
     fig_conf.add_trace(go.Scatter(
-        x=df["Timestamp"],
-        y=df["Confidence (%)"],
+        x=view_df["Timestamp"],
+        y=view_df["Confidence (%)"],
         mode="lines+markers",
         line=dict(color="#58a6ff", width=2),
         marker=dict(
-            color=[CLASS_COLORS.get(p, "#388bfd") for p in df["Prediction"]],
+            color=[CLASS_COLORS.get(p, "#388bfd") for p in view_df["Prediction"]],
             size=8,
         ),
         name="Confidence",
@@ -254,8 +365,8 @@ with col_right:
 
 fig_rpm = go.Figure()
 fig_rpm.add_trace(go.Scatter(
-    x=df["Timestamp"],
-    y=df["Speed (RPM)"],
+    x=view_df["Timestamp"],
+    y=view_df["Speed (RPM)"],
     mode="lines+markers",
     line=dict(color="#a371f7", width=2),
     marker=dict(size=6),
@@ -277,7 +388,7 @@ st.plotly_chart(fig_rpm, use_container_width=True)
 col_pie, col_table = st.columns([1, 2])
 
 with col_pie:
-    counts = df["Prediction"].value_counts()
+    counts = view_df["Prediction"].value_counts()
     fig_pie = go.Figure(go.Pie(
         labels=counts.index.tolist(),
         values=counts.values.tolist(),
@@ -294,7 +405,11 @@ with col_pie:
 
 with col_table:
     st.markdown("### Recent Predictions")
-    display_df = df[["Timestamp", "Prediction", "Confidence (%)", "Speed (RPM)", "RMS (g)"]].tail(20)
+    display_cols = ["Timestamp", "Prediction", "Confidence (%)", "Speed (RPM)", "RMS (g)"]
+    for optional_col in ["Session ID", "Mode", "Source", "Model"]:
+        if has_values(view_df, optional_col):
+            display_cols.append(optional_col)
+    display_df = view_df[display_cols].tail(20)
     display_df = display_df.sort_values("Timestamp", ascending=False)
     st.dataframe(display_df, use_container_width=True, hide_index=True)
 
@@ -306,14 +421,14 @@ st.markdown("---")
 st.markdown("### Session Summary")
 s1, s2, s3, s4 = st.columns(4)
 with s1:
-    st.metric("Total Readings", len(df))
+    st.metric("Visible Readings", len(view_df))
 with s2:
-    healthy_pct = (df["Prediction"] == "Healthy").mean() * 100
+    healthy_pct = (view_df["Prediction"] == "Healthy").mean() * 100
     st.metric("Healthy %", f"{healthy_pct:.1f}%")
 with s3:
-    st.metric("Avg Confidence", f"{df['Confidence (%)'].mean():.1f}%")
+    st.metric("Avg Confidence", f"{view_df['Confidence (%)'].mean():.1f}%")
 with s4:
-    st.metric("Avg Speed", f"{df['Speed (RPM)'].mean():.0f} RPM")
+    st.metric("Avg Speed", f"{view_df['Speed (RPM)'].mean():.0f} RPM")
 
 
 # =========================================================
