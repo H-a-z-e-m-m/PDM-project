@@ -5,6 +5,7 @@ Reads live prediction history from Google Sheets and displays it.
 """
 
 import time
+from html import escape
 
 import gspread
 import pandas as pd
@@ -26,32 +27,25 @@ st.markdown(
     """
     <style>
         .block-container {
-            max-width: 1280px;
-            padding-top: 2.5rem;
+            max-width: 1480px;
+            padding-top: 1.5rem;
             padding-bottom: 2rem;
         }
         h1 {
-            font-size: 2.65rem !important;
+            font-size: 2.35rem !important;
             letter-spacing: 0 !important;
+            margin-bottom: 0.25rem !important;
         }
         h3 {
-            margin-top: 0.6rem !important;
-        }
-        div[data-testid="stMetric"] {
-            background: #161b22;
-            border: 1px solid #30363d;
-            border-radius: 8px;
-            padding: 14px 16px;
-        }
-        div[data-testid="stMetricLabel"] {
-            color: #8b949e;
+            margin-top: 0.35rem !important;
+            margin-bottom: 0.65rem !important;
         }
         .status-card {
-            padding: 18px 20px;
+            padding: 16px 18px;
             border-radius: 8px;
             background: #161b22;
             border: 1px solid #30363d;
-            min-height: 112px;
+            min-height: 104px;
         }
         .status-card .label {
             margin: 0;
@@ -64,19 +58,80 @@ st.markdown(
         .status-card .value {
             margin: 8px 0 0;
             color: #e6edf3;
-            font-size: 30px;
+            font-size: 28px;
             font-weight: 800;
             line-height: 1.1;
+            overflow-wrap: anywhere;
         }
         .status-card .detail {
             margin: 8px 0 0;
             color: #8b949e;
             font-size: 13px;
         }
+        .info-strip {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 12px;
+            margin: 14px 0 18px;
+        }
+        .info-item {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            padding: 12px 14px;
+            min-width: 0;
+        }
+        .info-item .label {
+            margin: 0;
+            color: #8b949e;
+            font-size: 12px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+        .info-item .value {
+            margin: 6px 0 0;
+            color: #e6edf3;
+            font-size: 18px;
+            font-weight: 750;
+            line-height: 1.2;
+            overflow-wrap: anywhere;
+        }
         .section-note {
             color: #8b949e;
             font-size: 14px;
             margin-top: -0.2rem;
+        }
+        hr {
+            margin: 1.15rem 0 !important;
+        }
+        @media (max-width: 900px) {
+            .block-container {
+                padding: 1rem 0.85rem 1.5rem;
+            }
+            h1 {
+                font-size: 1.75rem !important;
+                line-height: 1.15 !important;
+            }
+            .info-strip {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 10px;
+            }
+            .status-card {
+                min-height: auto;
+                padding: 14px;
+            }
+            .status-card .value {
+                font-size: 24px;
+            }
+        }
+        @media (max-width: 560px) {
+            .info-strip {
+                grid-template-columns: 1fr;
+            }
+            h1 {
+                font-size: 1.45rem !important;
+            }
         }
     </style>
     """,
@@ -164,6 +219,37 @@ def latest_session_id(df):
     return str(with_sessions.iloc[-1]["Session ID"])
 
 
+def compact_text(value, head=18, tail=5):
+    if pd.isna(value):
+        return "Legacy"
+    text = str(value or "").strip()
+    if not text:
+        return "Legacy"
+    limit = head + tail + 3
+    if len(text) <= limit:
+        return text
+    return f"{text[:head]}...{text[-tail:]}"
+
+
+def compact_source(value):
+    if pd.isna(value):
+        return "Live log"
+    text = str(value or "").strip()
+    if not text:
+        return "Live log"
+    normalized = text.replace("\\", "/").rstrip("/")
+    return compact_text(normalized.split("/")[-1] or normalized, 22, 5)
+
+
+def info_item(label, value):
+    return (
+        "<div class='info-item'>"
+        f"<p class='label'>{escape(str(label))}</p>"
+        f"<p class='value'>{escape(str(value))}</p>"
+        "</div>"
+    )
+
+
 @st.cache_data(ttl=5)
 def fetch_data():
     """Pull all rows from the sheet and return as DataFrame."""
@@ -217,7 +303,7 @@ st.caption(
 
 st.markdown("---")
 
-col_r1, col_r2, col_r3 = st.columns([1, 1, 4])
+col_r1, col_r2, col_r3 = st.columns([1.05, 1.05, 5])
 with col_r1:
     if st.button("Refresh Now", use_container_width=True):
         st.cache_data.clear()
@@ -241,13 +327,13 @@ session_values = sorted([
     if str(x).strip()
 ])
 
-st.markdown("### Cloud View")
+st.markdown("### Cloud Controls")
 st.markdown(
-    "<p class='section-note'>Use the session selector to focus on the latest test run, "
-    "or switch to all sessions for long-term history.</p>",
+    "<p class='section-note'>The default view follows the latest live session. "
+    "Switch to all sessions when reviewing the full history.</p>",
     unsafe_allow_html=True,
 )
-f1, f2, f3 = st.columns([2.4, 1.7, 1.3])
+f1, f2, f3 = st.columns([2.2, 2.0, 1.1])
 with f1:
     if session_values:
         session_options = ["All sessions", "Latest session"] + session_values
@@ -289,17 +375,16 @@ with f3:
         use_container_width=True,
     )
 
-meta_cols = st.columns(4)
-with meta_cols[0]:
-    st.metric("Visible Rows", len(view_df))
-with meta_cols[1]:
-    st.metric("Sessions", view_df["Session ID"].astype(str).str.strip().replace("", pd.NA).dropna().nunique())
-with meta_cols[2]:
-    st.metric("Latest Session", latest_session if latest_session else "Legacy")
-with meta_cols[3]:
-    st.metric("Last Source", str(view_df.iloc[-1]["Source"] or "Live log"))
-
-st.markdown("---")
+session_count = view_df["Session ID"].astype(str).str.strip().replace("", pd.NA).dropna().nunique()
+status_html = (
+    "<div class='info-strip'>"
+    + info_item("Visible rows", len(view_df))
+    + info_item("Sessions", session_count)
+    + info_item("Latest session", compact_text(latest_session, 20, 5))
+    + info_item("Last source", compact_source(view_df.iloc[-1]["Source"]))
+    + "</div>"
+)
+st.markdown(status_html, unsafe_allow_html=True)
 
 
 # =========================================================
@@ -343,7 +428,7 @@ with c4:
     st.markdown(
         f"<div class='status-card' style='text-align:center'>"
         f"<p class='label'>Last Updated</p>"
-        f"<p class='detail' style='font-size:14px;color:#e6edf3'>{ts}</p>"
+        f"<p class='detail' style='font-size:14px;color:#e6edf3;overflow-wrap:anywhere'>{escape(ts)}</p>"
         f"</div>",
         unsafe_allow_html=True,
     )
@@ -351,7 +436,7 @@ with c4:
 if str(latest.get("Session ID", "")).strip():
     st.caption(
         f"Session: {latest['Session ID']} | "
-        f"Source: {latest.get('Source', '') or 'n/a'}"
+        f"Source: {compact_source(latest.get('Source', ''))}"
     )
 
 st.markdown("<br>", unsafe_allow_html=True)
