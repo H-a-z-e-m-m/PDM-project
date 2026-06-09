@@ -257,8 +257,9 @@ def fetch_data():
         ws = get_worksheet()
 
         # Avoid gspread get_all_records(), which can fail on Streamlit Cloud with:
-        # APIError [400]: Unable to parse range: 'Sheet1'
-        values = ws.get("A1:Q10000")
+        # APIError [400]: Unable to parse range: 'Sheet1'.
+        # Use whole columns so the monitor does not miss new rows after 10,000.
+        values = ws.get("A:Q")
         records = rows_to_records(values)
         if not records:
             return pd.DataFrame()
